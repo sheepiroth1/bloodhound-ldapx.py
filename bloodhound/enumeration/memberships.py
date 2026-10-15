@@ -26,7 +26,7 @@ import logging
 import queue
 import threading
 import calendar
-from bloodhound.ad.utils import ADUtils, AceResolver, CollectionException, ldap_search_count
+from bloodhound.ad.utils import ADUtils, AceResolver, CollectionException, ldap_search_count, get_time_window, get_ldap_pacer, estimate_phase_time, format_duration, start_phase
 from bloodhound.ad.computer import ADComputer
 from bloodhound.ad.structures import LDAP_SID
 from bloodhound.enumeration.acls import AclEnumerator, parse_binary_acl
@@ -100,12 +100,36 @@ class MembershipEnumerator(object):
         else:
             self.result_q.put(obj)
 
-    def _collect(self, phase, filename, meta_type, fetch, fill, extras=None):
+    def _collect(self, phase, filename, meta_type, fetch, fill, extras=None, count_filter=None):
         """
         Run one output phase. With --partition-ldap, each objectGUID slice is
-        its own file and a finished slice is skipped on resume.
+        its own file and a finished slice is skipped on resume.  With
+        --partition-auto, estimate single-query time against the run window
+        and skip slicing when it fits.
         """
-        if not getattr(self.addc, 'partition_ldap', False):
+        skip_slicing = not getattr(self.addc, 'partition_ldap', False)
+        if not skip_slicing and getattr(self.addc, 'partition_auto', False) and count_filter is not None:
+            tw = get_time_window()
+            pacer = get_ldap_pacer()
+            window = tw.window_seconds() if tw is not None else None
+            buffer_s = getattr(self.addc, 'partition_buffer', 1800)
+            available = (window - buffer_s) if window is not None else None
+            count = self.addc.count_objects(count_filter, early_exit_seconds=available)
+            t_original = estimate_phase_time(count, pacer)
+            if available is None or t_original <= available:
+                logging.info(
+                    '%s: %d objects, estimated %s (fits in %s window with %s buffer) -> single query',
+                    phase, count, format_duration(t_original),
+                    format_duration(window) if window is not None else 'no',
+                    format_duration(buffer_s))
+                skip_slicing = True
+            else:
+                logging.info(
+                    '%s: %d objects, estimated %s (exceeds %s window with %s buffer) -> GUID slicing',
+                    phase, count, format_duration(t_original),
+                    format_duration(window), format_duration(buffer_s))
+
+        if skip_slicing:
             self.result_q = queue.Queue()
             status = self._start_writer(OutputWorker.membership_write_worker, (self.result_q, meta_type, filename))
             fill(fetch(None))
@@ -299,6 +323,7 @@ class MembershipEnumerator(object):
             self.result_q.put(user)
 
     def enumerate_users(self, timestamp="", fileNamePrefix=""):
+        start_phase('USERS')
         filename = output_filename(fileNamePrefix, timestamp, 'users.json')
         if not prepare_phase(self.resume, 'users', filename, 'users'):
             return
@@ -313,7 +338,8 @@ class MembershipEnumerator(object):
                 'users', filename, 'users',
                 lambda prefix: self.addc.get_users(include_properties=with_properties, acl=acl, guid_prefix=prefix),
                 lambda found: self._fill_users(found, with_properties, acl),
-                self.write_default_users)
+                self.write_default_users,
+                count_filter='(&(objectCategory=person)(objectClass=user))')
             return
 
         logging.debug('Writing users to file: %s', filename)
@@ -400,6 +426,7 @@ class MembershipEnumerator(object):
             self.result_q.put(group)
 
     def enumerate_groups(self, timestamp="", fileNamePrefix=""):
+        start_phase('GROUPS')
 
         highvalue = ["S-1-5-32-544", "S-1-5-32-550", "S-1-5-32-549", "S-1-5-32-551", "S-1-5-32-548"]
 
@@ -422,7 +449,8 @@ class MembershipEnumerator(object):
                 'groups', filename, 'groups',
                 lambda prefix: self.addc.get_groups(include_properties=with_properties, acl=acl, guid_prefix=prefix),
                 lambda found: self._fill_groups(found, with_properties, acl, is_highvalue),
-                self.write_default_groups)
+                self.write_default_groups,
+                count_filter='(objectClass=group)')
             return
         entries = self.addc.get_groups(include_properties=with_properties, acl=acl)
 
@@ -484,6 +512,7 @@ class MembershipEnumerator(object):
         Enumerate computer objects. This function is only used if no
         collection was requested that required connecting to computers anyway.
         '''
+        start_phase('COMPUTERS')
         filename = output_filename(fileNamePrefix, timestamp, 'computers.json')
         if not prepare_phase(self.resume, 'computers', filename, 'computers'):
             return
@@ -494,7 +523,8 @@ class MembershipEnumerator(object):
             self._collect(
                 'computers', filename, 'computers',
                 lambda prefix: self.addc.get_computers(include_properties=with_properties, acl=acl, guid_prefix=prefix),
-                lambda found: self._fill_computers(found, acl))
+                lambda found: self._fill_computers(found, acl),
+                count_filter='(sAMAccountType=805306369)')
             return
 
         entries = self.addc.get_computers(include_properties=with_properties, acl=acl)
@@ -572,6 +602,7 @@ class MembershipEnumerator(object):
             self.result_q.put(gpo)
 
     def enumerate_gpos(self, timestamp ="", fileNamePrefix=""):
+        start_phase('GPOS')
         filename = output_filename(fileNamePrefix, timestamp, 'gpos.json')
         if not prepare_phase(self.resume, 'gpos', filename, 'gpos'):
             return
@@ -583,7 +614,8 @@ class MembershipEnumerator(object):
             self._collect(
                 'gpos', filename, 'gpos',
                 lambda prefix: self.addc.get_gpos(include_properties=with_properties, acl=acl, guid_prefix=prefix),
-                lambda found: self._fill_gpos(found, with_properties, acl))
+                lambda found: self._fill_gpos(found, with_properties, acl),
+                count_filter='(objectCategory=groupPolicyContainer)')
             return
         entries = self.addc.get_gpos(include_properties=with_properties, acl=acl)
 
@@ -779,6 +811,7 @@ class MembershipEnumerator(object):
             self._process_container(entry, with_properties, acl)
 
     def enumerate_ous(self, timestamp ="", fileNamePrefix=""):
+        start_phase('OUS')
         filename = output_filename(fileNamePrefix, timestamp, 'ous.json')
         if not prepare_phase(self.resume, 'ous', filename, 'ous'):
             return
@@ -789,7 +822,8 @@ class MembershipEnumerator(object):
             self._collect(
                 'ous', filename, 'ous',
                 lambda prefix: self.addc.get_ous(include_properties=with_properties, acl=acl, guid_prefix=prefix),
-                lambda found: self._fill_ous(found, with_properties, acl))
+                lambda found: self._fill_ous(found, with_properties, acl),
+                count_filter='(objectCategory=organizationalUnit)')
             return
         entries = self.addc.get_ous(include_properties=with_properties, acl=acl)
 
@@ -820,6 +854,7 @@ class MembershipEnumerator(object):
         logging.debug('Finished writing OU')
 
     def enumerate_containers(self, timestamp ="", fileNamePrefix=""):
+        start_phase('CONTAINERS')
         filename = output_filename(fileNamePrefix, timestamp, 'containers.json')
         if not prepare_phase(self.resume, 'containers', filename, 'containers'):
             return
@@ -830,7 +865,8 @@ class MembershipEnumerator(object):
             self._collect(
                 'containers', filename, 'containers',
                 lambda prefix: self.addc.get_containers(include_properties=with_properties, acl=acl, guid_prefix=prefix),
-                lambda found: self._fill_containers(found, with_properties, acl))
+                lambda found: self._fill_containers(found, with_properties, acl),
+                count_filter='(&(objectCategory=container)(objectClass=container))')
             return
         entries = self.addc.get_containers(include_properties=with_properties, acl=acl)
 

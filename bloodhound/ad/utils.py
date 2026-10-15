@@ -23,6 +23,7 @@
 ####################
 import datetime
 import logging
+import math
 import socket
 import threading
 import time
@@ -795,13 +796,42 @@ class HostCallPacer(object):
 
 # Process-wide pacer, search counter, and a guard so Connection.search is only wrapped once.
 _LDAP_PACER = None
+_COUNT_PACER = None
 _HOST_PACER = None
 _LDAP_SEARCHES = 0
 _SEARCH_WRAPPED = False
+_count_mode = threading.local()
+_current_phase = threading.local()
+_phase_total = [0]
+_phase_index = [0]
+
+
+def set_phase(name):
+    _current_phase.name = name
+
+
+def get_phase():
+    return getattr(_current_phase, 'name', '')
+
+
+def set_phase_sequence(total):
+    _phase_total[0] = total
+    _phase_index[0] = 0
+
+
+def start_phase(name):
+    set_phase(name)
+    if _phase_total[0]:
+        _phase_index[0] += 1
+        logging.info('Phase %d/%d', _phase_index[0], _phase_total[0])
 
 
 def get_ldap_pacer():
     return _LDAP_PACER
+
+
+def get_count_pacer():
+    return _COUNT_PACER
 
 
 def ldap_search_count():
@@ -824,7 +854,10 @@ def install_ldap_search_counter():
         tw = _TIME_WINDOW
         if tw is not None:
             tw.wait_if_outside()
-        pacer = _LDAP_PACER
+        if getattr(_count_mode, 'active', False):
+            pacer = _COUNT_PACER
+        else:
+            pacer = _LDAP_PACER
         if pacer is None:
             return original(self, *args, **kwargs)
         return pacer.run(original, self, *args, **kwargs)
@@ -843,6 +876,17 @@ def install_ldap_pacing(interval, jitter_pct, page_interval=0, page_jitter_pct=0
     _LDAP_PACER = LdapQueryPacer(interval, jitter_pct, page_interval, page_jitter_pct)
     install_ldap_search_counter()
     return _LDAP_PACER
+
+
+def install_count_pacing(interval, jitter_pct):
+    global _COUNT_PACER
+    _COUNT_PACER = LdapQueryPacer(interval, jitter_pct)
+    install_ldap_search_counter()
+    return _COUNT_PACER
+
+
+def set_count_mode(active):
+    _count_mode.active = active
 
 
 def install_host_pacing(throttle_ms, jitter_pct):
@@ -986,6 +1030,21 @@ class TimeWindow(object):
             else:
                 text += ' (jitter +/-%.0fm)' % self.jitter_minutes
         return text
+
+    def window_seconds(self):
+        start_minutes = self.start[0] * 60 + self.start[1]
+        end_minutes = self.end[0] * 60 + self.end[1]
+        return (end_minutes - start_minutes) * 60
+
+def estimate_phase_time(count, pacer):
+    page_size = 200
+    if pacer is None or (pacer.interval <= 0 and pacer.page_interval <= 0):
+        return 0.0
+    avg_search = pacer.interval * (1.0 + pacer.jitter / 2.0)
+    avg_page = pacer.page_interval * (1.0 + pacer.page_jitter / 2.0)
+    pages = max(1, int(math.ceil(count / float(page_size))))
+    continuations = pages - 1
+    return avg_search + continuations * avg_page
 
 def install_time_window(start_hour, start_minute, end_hour, end_minute,
                         allowed_days, jitter_minutes=0):

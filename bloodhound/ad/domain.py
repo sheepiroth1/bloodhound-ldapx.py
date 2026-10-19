@@ -177,10 +177,14 @@ class ADDC(ADComputer):
             # ldapx mode: connect to the local ldapx GC listener, skip DNS
             logging.info('Connecting to GC LDAP server via ldapx listener: %s' % self.hostname)
             logging.debug('Using ldapx GC listener at %s:%d' % self.ad.gc_listener)
-            self.gcldap = self.ad.auth.getLDAPConnection(hostname=self.hostname,
-                                                         ip=self.ad.gc_listener[0],
-                                                         gc=True,
-                                                         baseDN=self.ad.baseDN, protocol='ldap')
+            try:
+                self.gcldap = self.ad.auth.getLDAPConnection(hostname=self.hostname,
+                                                             ip=self.ad.gc_listener[0],
+                                                             gc=True,
+                                                             baseDN=self.ad.baseDN, protocol='ldap')
+            except Exception as e:
+                logging.warning('Failed to connect to GC via ldapx: %s', e)
+                return False
             return self.gcldap is not None
 
         if self.hostname in self.ad.gcs():
@@ -223,8 +227,12 @@ class ADDC(ADComputer):
             logging.error('Could not resolve the IP address of any Global Catalog server')
             return False
 
-        self.gcldap = self.ad.auth.getLDAPConnection(hostname=self.hostname, ip=ip, gc=True,
-                                                     baseDN=self.ad.baseDN, protocol=protocol)
+        try:
+            self.gcldap = self.ad.auth.getLDAPConnection(hostname=self.hostname, ip=ip, gc=True,
+                                                         baseDN=self.ad.baseDN, protocol=protocol)
+        except Exception as e:
+            logging.warning('Failed to connect to GC: %s', e)
+            return False
         return self.gcldap is not None
 
     def search(self, search_filter='(objectClass=*)',attributes=None, search_base=None, generator=True, use_gc=False, use_resolver=False, query_sd=False, search_scope=SUBTREE, progress_label='LDAP', auto_escape=True):

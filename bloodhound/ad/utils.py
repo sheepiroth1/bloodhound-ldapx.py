@@ -477,27 +477,31 @@ class AceResolver(object):
                 try:
                     linkitem = self.addomain.newsidcache.get(ace['sid'])
                 except KeyError:
-                    # Look it up instead
-                    # Is this SID part of the current domain? If not, use GC
-                    use_gc = not ace['sid'].startswith(self.addomain.domain_object.sid)
-                    ldapentry = self.resolver.resolve_sid(ace['sid'], use_gc)
-                    # Couldn't resolve...
-                    if not ldapentry:
-                        logging.debug('Could not resolve SID: %s', ace['sid'])
-                        # Fake it
-                        entry = {
-                            'type': 'Base',
-                            'objectid': ace['sid']
+                    try:
+                        # Look it up instead
+                        # Is this SID part of the current domain? If not, use GC
+                        use_gc = not ace['sid'].startswith(self.addomain.domain_object.sid)
+                        ldapentry = self.resolver.resolve_sid(ace['sid'], use_gc)
+                        # Couldn't resolve...
+                        if not ldapentry:
+                            logging.debug('Could not resolve SID: %s', ace['sid'])
+                            # Fake it
+                            entry = {
+                                'type': 'Base',
+                                'objectid': ace['sid']
+                            }
+                        else:
+                            entry = ADUtils.resolve_ad_entry(ldapentry)
+                        linkitem = {
+                            "ObjectIdentifier": entry['objectid'],
+                            "ObjectType": entry['type'].capitalize()
                         }
-                    else:
-                        entry = ADUtils.resolve_ad_entry(ldapentry)
-                    linkitem = {
-                        "ObjectIdentifier": entry['objectid'],
-                        "ObjectType": entry['type'].capitalize()
-                    }
-                    # Entries are cached regardless of validity - unresolvable sids
-                    # are not likely to be resolved the second time and this saves traffic
-                    self.addomain.newsidcache.put(ace['sid'], linkitem)
+                        # Entries are cached regardless of validity - unresolvable sids
+                        # are not likely to be resolved the second time and this saves traffic
+                        self.addomain.newsidcache.put(ace['sid'], linkitem)
+                    except Exception:
+                        logging.warning('Failed to resolve SID: %s', ace['sid'])
+                        continue
                 out['PrincipalSID'] = ace['sid']
                 out['PrincipalType'] = linkitem['ObjectType']
             aces_out.append(out)

@@ -912,8 +912,10 @@ class MembershipEnumerator(object):
         Process ACLs that resulted from parsing with cstruct
         """
         data, aces = result
-        # Parse aces
-        data['Aces'] += self.aceresolver.resolve_aces(aces)
+        try:
+            data['Aces'] += self.aceresolver.resolve_aces(aces)
+        except Exception:
+            logging.warning('Failed to resolve ACEs for %s', data.get('ObjectIdentifier', '?'))
         self.result_q.put(data)
 
     def write_default_users(self):

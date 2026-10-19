@@ -33,7 +33,7 @@ from dns import resolver
 from ldap3 import ALL_ATTRIBUTES, BASE, SUBTREE, LEVEL
 from ldap3.core.exceptions import LDAPKeyError, LDAPAttributeError, LDAPCursorError, LDAPNoSuchObjectResult, LDAPSocketReceiveError, LDAPSocketSendError, LDAPCommunicationError
 from ldap3.protocol.microsoft import security_descriptor_control
-from bloodhound.ad.utils import ADUtils, DNSCache, SidCache, SamCache, CollectionException, get_ldap_pacer, get_time_window, estimate_phase_time, format_duration, ldap_search_count, set_count_mode, start_phase
+from bloodhound.ad.utils import ADUtils, DNSCache, SidCache, SamCache, CollectionException, get_ldap_pacer, get_time_window, estimate_phase_time, format_duration, ldap_search_count, set_count_mode
 from bloodhound.ad.computer import ADComputer
 from bloodhound.enumeration.objectresolver import ObjectResolver
 from bloodhound.enumeration.resume import GUID_SLICES, guid_filter
@@ -411,11 +411,7 @@ class ADDC(ADComputer):
         """
         Function to get objecttype GUID
         """
-<<<<<<< Updated upstream
-        start_phase('SCHEMA')
-=======
         set_phase('SCHEMA')
->>>>>>> Stashed changes
         logging.info('Collecting schema')
         started = ldap_search_count()
         resume = getattr(self, 'resume', None)
@@ -860,11 +856,7 @@ class ADDC(ADComputer):
     def prefetch_info(self, props=False, acls=False, cache_computers=False, skip_schema=False):
         if not skip_schema:
             self.get_objecttype()
-<<<<<<< Updated upstream
-        start_phase('SETUP')
-=======
         set_phase('PREFETCH')
->>>>>>> Stashed changes
         started = ldap_search_count()
         self.get_domains(acl=acls)
         self.get_forest_domains()

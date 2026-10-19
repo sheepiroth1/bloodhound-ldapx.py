@@ -801,29 +801,6 @@ _HOST_PACER = None
 _LDAP_SEARCHES = 0
 _SEARCH_WRAPPED = False
 _count_mode = threading.local()
-_current_phase = threading.local()
-_phase_total = [0]
-_phase_index = [0]
-
-
-def set_phase(name):
-    _current_phase.name = name
-
-
-def get_phase():
-    return getattr(_current_phase, 'name', '')
-
-
-def set_phase_sequence(total):
-    _phase_total[0] = total
-    _phase_index[0] = 0
-
-
-def start_phase(name):
-    set_phase(name)
-    if _phase_total[0]:
-        _phase_index[0] += 1
-        logging.info('Phase %d/%d', _phase_index[0], _phase_total[0])
 
 
 def get_ldap_pacer():

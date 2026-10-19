@@ -44,7 +44,7 @@ except Exception:
 
 from bloodhound.ad.domain import AD, ADDC
 from bloodhound.ad.authentication import ADAuthentication, enable_kerberos_socks, disable_kerberos_socks
-from bloodhound.ad.utils import ADUtils, CollectionException, parse_ldap_interval, parse_throttle, parse_run_time, parse_run_jitter, install_ldap_pacing, install_ldap_search_counter, install_host_pacing, install_count_pacing, install_time_window, ldap_search_count, get_phase, set_phase, start_phase, set_phase_sequence
+from bloodhound.ad.utils import ADUtils, CollectionException, parse_ldap_interval, parse_throttle, parse_run_time, parse_run_jitter, install_ldap_pacing, install_ldap_search_counter, install_host_pacing, install_count_pacing, install_time_window, ldap_search_count
 from bloodhound.ldapxbin import LDAPX_VERSION, resolve_ldapx_binary
 from bloodhound.phaselogger import PhaseFormatter, PhaseFileFormatter, set_phase, build_phase_sequence
 from bloodhound.enumeration.computers import ComputerEnumerator
@@ -505,24 +505,6 @@ class BloodHound(object):
             logging.info('Skipping schema, checkpoint has %d types', len(resume.schema_map))
             self.pdc.restore_objecttype(resume.schema_map)
 
-        phase_names = []
-        if not skip_schema:
-            phase_names.append('SCHEMA')
-        phase_names.append('SETUP')
-        if 'group' in collect or 'objectprops' in collect or 'acl' in collect:
-            phase_names.extend(['USERS', 'GROUPS'])
-            if 'container' in collect:
-                phase_names.extend(['GPOS', 'OUS', 'CONTAINERS'])
-            phase_names.append('COMPUTERS')
-        elif 'container' in collect:
-            phase_names.extend(['GPOS', 'OUS', 'CONTAINERS'])
-        if 'trusts' in collect or 'acl' in collect or 'objectprops' in collect:
-            phase_names.append('TRUSTS')
-        if do_computer_enum:
-            phase_names.append('HOSTS')
-        set_phase_sequence(len(phase_names))
-        logging.info('Collection plan (%d phases): %s', len(phase_names), ' -> '.join(phase_names))
-
         if 'group' in collect or 'objectprops' in collect or 'acl' in collect:
             # Fetch domains for later, computers if needed
             self.pdc.prefetch_info('objectprops' in collect, 'acl' in collect, cache_computers=cache_computers, skip_schema=skip_schema)
@@ -608,18 +590,6 @@ def resolve_collection_methods(methods):
             logging.error('Invalid collection method specified: %s', method)
             return False
 
-class PhaseFormatter(logging.Formatter):
-    def format(self, record):
-        phase = get_phase()
-        if phase:
-            saved = record.levelname
-            record.levelname = '[%s][%s]' % (phase, saved)
-            result = super().format(record)
-            record.levelname = saved
-            return result
-        return super().format(record)
-
-
 def main():
 #    logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 
@@ -627,12 +597,7 @@ def main():
     logger.setLevel(logging.INFO)
     stream = logging.StreamHandler(sys.stderr)
     stream.setLevel(logging.DEBUG)
-<<<<<<< Updated upstream
-    formatter = PhaseFormatter('%(levelname)s: %(message)s')
-#    formatter = PhaseFormatter('%(asctime)s %(levelname)s: %(message)s')
-=======
     formatter = PhaseFormatter('%(message)s')
->>>>>>> Stashed changes
     stream.setFormatter(formatter)
     logger.addHandler(stream)
     set_phase('INIT')
@@ -946,13 +911,8 @@ def main():
         except OSError as exc:
             parser.error('Could not open --log-file %s: %s' % (args.log_file, exc))
         file_handler.setLevel(logging.DEBUG)
-<<<<<<< Updated upstream
-        file_handler.setFormatter(PhaseFormatter('%(asctime)s %(levelname)s: %(message)s',
-                                                  datefmt='%Y-%m-%d %H:%M:%S'))
-=======
         file_handler.setFormatter(PhaseFileFormatter('%(asctime)s %(message)s',
                                                      datefmt='%Y-%m-%d %H:%M:%S'))
->>>>>>> Stashed changes
         logger.addHandler(file_handler)
 
     logging.info('BloodHound.py for BloodHound Community Edition')
@@ -1195,15 +1155,10 @@ def main():
                        fileNamePrefix=args.outputprefix,
                        resume=resume,
                        partition_ldap=args.partition_ldap,
-<<<<<<< Updated upstream
                        search_base=args.search_base,
                        partition_auto=args.partition_auto,
                        partition_buffer=partition_buffer_seconds)
-        #If args --zip is true, the compress output
-=======
-                       search_base=args.search_base)
         set_phase('OUTPUT')
->>>>>>> Stashed changes
         if args.zip:
             logging.info("Compressing output into " + timestamp + "bloodhound.zip")
             # Get a list of files in the current dir

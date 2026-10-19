@@ -37,6 +37,7 @@ from bloodhound.ad.utils import ADUtils, DNSCache, SidCache, SamCache, Collectio
 from bloodhound.ad.computer import ADComputer
 from bloodhound.enumeration.objectresolver import ObjectResolver
 from bloodhound.enumeration.resume import GUID_SLICES, guid_filter
+from bloodhound.phaselogger import set_phase
 
 # Consecutive failures of the same LDAP page before the run stops.
 _LDAP_SEARCH_ATTEMPTS = 5
@@ -410,7 +411,11 @@ class ADDC(ADComputer):
         """
         Function to get objecttype GUID
         """
+<<<<<<< Updated upstream
         start_phase('SCHEMA')
+=======
+        set_phase('SCHEMA')
+>>>>>>> Stashed changes
         logging.info('Collecting schema')
         started = ldap_search_count()
         resume = getattr(self, 'resume', None)
@@ -855,7 +860,11 @@ class ADDC(ADComputer):
     def prefetch_info(self, props=False, acls=False, cache_computers=False, skip_schema=False):
         if not skip_schema:
             self.get_objecttype()
+<<<<<<< Updated upstream
         start_phase('SETUP')
+=======
+        set_phase('PREFETCH')
+>>>>>>> Stashed changes
         started = ldap_search_count()
         self.get_domains(acl=acls)
         self.get_forest_domains()

@@ -46,6 +46,7 @@ from bloodhound.ad.domain import AD, ADDC
 from bloodhound.ad.authentication import ADAuthentication, enable_kerberos_socks, disable_kerberos_socks
 from bloodhound.ad.utils import ADUtils, CollectionException, parse_ldap_interval, parse_throttle, parse_run_time, parse_run_jitter, install_ldap_pacing, install_ldap_search_counter, install_host_pacing, install_count_pacing, install_time_window, ldap_search_count, get_phase, set_phase, start_phase, set_phase_sequence
 from bloodhound.ldapxbin import LDAPX_VERSION, resolve_ldapx_binary
+from bloodhound.phaselogger import PhaseFormatter, PhaseFileFormatter, set_phase, build_phase_sequence
 from bloodhound.enumeration.computers import ComputerEnumerator
 from bloodhound.enumeration.memberships import MembershipEnumerator
 from bloodhound.enumeration.domains import DomainEnumerator
@@ -626,8 +627,12 @@ def main():
     logger.setLevel(logging.INFO)
     stream = logging.StreamHandler(sys.stderr)
     stream.setLevel(logging.DEBUG)
+<<<<<<< Updated upstream
     formatter = PhaseFormatter('%(levelname)s: %(message)s')
 #    formatter = PhaseFormatter('%(asctime)s %(levelname)s: %(message)s')
+=======
+    formatter = PhaseFormatter('%(message)s')
+>>>>>>> Stashed changes
     stream.setFormatter(formatter)
     logger.addHandler(stream)
     set_phase('INIT')
@@ -941,8 +946,13 @@ def main():
         except OSError as exc:
             parser.error('Could not open --log-file %s: %s' % (args.log_file, exc))
         file_handler.setLevel(logging.DEBUG)
+<<<<<<< Updated upstream
         file_handler.setFormatter(PhaseFormatter('%(asctime)s %(levelname)s: %(message)s',
                                                   datefmt='%Y-%m-%d %H:%M:%S'))
+=======
+        file_handler.setFormatter(PhaseFileFormatter('%(asctime)s %(message)s',
+                                                     datefmt='%Y-%m-%d %H:%M:%S'))
+>>>>>>> Stashed changes
         logger.addHandler(file_handler)
 
     logging.info('BloodHound.py for BloodHound Community Edition')
@@ -1050,6 +1060,7 @@ def main():
             args.password = getpass.getpass()
 
         if args.ldapx_target:
+            set_phase('LDAPX')
             try:
                 ldapx, ldapx_dc_fqdn, ldapx_kdc, discovered_domain = start_ldapx_mode(args)
             except CollectionException as e:
@@ -1058,6 +1069,7 @@ def main():
             if discovered_domain and not args.domain:
                 args.domain = discovered_domain
 
+        set_phase('AUTH')
         if args.username is not None and args.password is not None:
             logging.debug('Authentication: username/password')
             auth = ADAuthentication(username=args.username, password=args.password, domain=args.domain, auth_method=args.auth_method, ldap_channel_binding=args.ldap_channel_binding)
@@ -1089,12 +1101,16 @@ def main():
                 args.auth_method = 'kerberos'
                 auth = ADAuthentication(username=args.username, password=args.password, domain=args.domain, auth_method=args.auth_method, ldap_channel_binding=args.ldap_channel_binding)
 
+        set_phase('CONNECT')
         ad = AD(auth=auth, domain=args.domain, nameserver=args.nameserver, dns_tcp=args.dns_tcp, dns_timeout=args.dns_timeout, use_ldaps=(args.use_ldaps and not args.ldapx_target))
         # Resolve collection methods
         collect = resolve_collection_methods(args.collectionmethod)
         if not collect:
             return
         logging.debug('Resolved collection methods: %s', ', '.join(list(collect)))
+
+        phase_seq = build_phase_sequence(collect, ldapx is not None)
+        logging.info('Phase sequence: %s', ' > '.join(phase_seq))
 
         if ldapx is not None:
             # ldapx mode: no DNS discovery. The DC/GC are the real DC FQDN (used
@@ -1179,10 +1195,15 @@ def main():
                        fileNamePrefix=args.outputprefix,
                        resume=resume,
                        partition_ldap=args.partition_ldap,
+<<<<<<< Updated upstream
                        search_base=args.search_base,
                        partition_auto=args.partition_auto,
                        partition_buffer=partition_buffer_seconds)
         #If args --zip is true, the compress output
+=======
+                       search_base=args.search_base)
+        set_phase('OUTPUT')
+>>>>>>> Stashed changes
         if args.zip:
             logging.info("Compressing output into " + timestamp + "bloodhound.zip")
             # Get a list of files in the current dir

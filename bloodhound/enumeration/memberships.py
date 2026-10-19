@@ -35,6 +35,7 @@ from bloodhound.enumeration.resume import (
     GUID_SLICES, concat_slice_files, finish_phase, output_filename, prepare_phase,
     remove_output, slice_output_path,
 )
+from bloodhound.phaselogger import set_phase
 
 class MembershipEnumerator(object):
     """
@@ -323,7 +324,11 @@ class MembershipEnumerator(object):
             self.result_q.put(user)
 
     def enumerate_users(self, timestamp="", fileNamePrefix=""):
+<<<<<<< Updated upstream
         start_phase('USERS')
+=======
+        set_phase('USERS')
+>>>>>>> Stashed changes
         filename = output_filename(fileNamePrefix, timestamp, 'users.json')
         if not prepare_phase(self.resume, 'users', filename, 'users'):
             return
@@ -426,7 +431,11 @@ class MembershipEnumerator(object):
             self.result_q.put(group)
 
     def enumerate_groups(self, timestamp="", fileNamePrefix=""):
+<<<<<<< Updated upstream
         start_phase('GROUPS')
+=======
+        set_phase('GROUPS')
+>>>>>>> Stashed changes
 
         highvalue = ["S-1-5-32-544", "S-1-5-32-550", "S-1-5-32-549", "S-1-5-32-551", "S-1-5-32-548"]
 
@@ -512,7 +521,11 @@ class MembershipEnumerator(object):
         Enumerate computer objects. This function is only used if no
         collection was requested that required connecting to computers anyway.
         '''
+<<<<<<< Updated upstream
         start_phase('COMPUTERS')
+=======
+        set_phase('COMPUTERS')
+>>>>>>> Stashed changes
         filename = output_filename(fileNamePrefix, timestamp, 'computers.json')
         if not prepare_phase(self.resume, 'computers', filename, 'computers'):
             return
@@ -602,7 +615,11 @@ class MembershipEnumerator(object):
             self.result_q.put(gpo)
 
     def enumerate_gpos(self, timestamp ="", fileNamePrefix=""):
+<<<<<<< Updated upstream
         start_phase('GPOS')
+=======
+        set_phase('GPOS')
+>>>>>>> Stashed changes
         filename = output_filename(fileNamePrefix, timestamp, 'gpos.json')
         if not prepare_phase(self.resume, 'gpos', filename, 'gpos'):
             return
@@ -811,7 +828,11 @@ class MembershipEnumerator(object):
             self._process_container(entry, with_properties, acl)
 
     def enumerate_ous(self, timestamp ="", fileNamePrefix=""):
+<<<<<<< Updated upstream
         start_phase('OUS')
+=======
+        set_phase('OUS')
+>>>>>>> Stashed changes
         filename = output_filename(fileNamePrefix, timestamp, 'ous.json')
         if not prepare_phase(self.resume, 'ous', filename, 'ous'):
             return
@@ -854,7 +875,11 @@ class MembershipEnumerator(object):
         logging.debug('Finished writing OU')
 
     def enumerate_containers(self, timestamp ="", fileNamePrefix=""):
+<<<<<<< Updated upstream
         start_phase('CONTAINERS')
+=======
+        set_phase('CONTAINERS')
+>>>>>>> Stashed changes
         filename = output_filename(fileNamePrefix, timestamp, 'containers.json')
         if not prepare_phase(self.resume, 'containers', filename, 'containers'):
             return

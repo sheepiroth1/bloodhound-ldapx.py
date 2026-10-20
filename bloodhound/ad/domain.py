@@ -984,7 +984,14 @@ class AD(object):
         logging.info('Loaded cached DNs and SIDs from cachefile')
 
     def save_cachefile(self, cachefile):
-        pass
+        cachedata = {
+            'dncache': self.dncache,
+            'sidcache': self.newsidcache.export(),
+        }
+        with codecs.open(cachefile, 'w', 'utf-8') as cfile:
+            json.dump(cachedata, cfile)
+        logging.info('Saved %d cached DNs and %d cached SIDs to cachefile',
+                     len(cachedata['dncache']), len(cachedata['sidcache']))
 
     def dns_resolve(self, domain=None, options=None):
         logging.debug('Querying domain controller information from DNS')

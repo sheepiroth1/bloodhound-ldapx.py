@@ -496,6 +496,8 @@ class BloodHound(object):
             self.pdc.resume = resume
         if cachefile:
             self.ad.load_cachefile(cachefile)
+        if resume is not None and resume.has_cache():
+            resume.restore_cache(self.ad)
 
         # Check early if we should enumerate computers as well
         do_computer_enum = any(method in collect for method in ['localadmin', 'session', 'loggedon', 'experimental', 'rdp', 'dcom', 'psremote'])

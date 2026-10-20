@@ -139,6 +139,8 @@ class MembershipEnumerator(object):
                 extras()
             self._close_acl_pool()
             self.result_q.put(None)
+            if self.resume is not None:
+                self.resume.save_cache(self.addomain)
             self._finish_writer(phase, status)
             return
 
@@ -169,6 +171,7 @@ class MembershipEnumerator(object):
             extra_rows = self._captured
         concat_slice_files(filename, meta_type, slice_files, extra_rows)
         if self.resume is not None:
+            self.resume.save_cache(self.addomain)
             self.resume.mark(phase)
         if self._search_mark is not None:
             logging.info('%s: %d LDAP searches', phase, ldap_search_count() - self._search_mark)

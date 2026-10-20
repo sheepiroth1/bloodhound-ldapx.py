@@ -593,6 +593,10 @@ class SidCache(object):
     def load(self, cache):
         self._cache = cache
 
+    def export(self):
+        with self.lock:
+            return dict(self._cache)
+
 class SamCache(SidCache):
     """
     Cache for mapping SAM names to principals.

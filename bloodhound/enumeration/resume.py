@@ -208,7 +208,7 @@ class CollectionResume(object):
     continue after the last finished JSON file.
     """
 
-    def __init__(self, path, domain, collection, timestamp, prefix, phases, schema_map, slices=None):
+    def __init__(self, path, domain, collection, timestamp, prefix, phases, schema_map, slices=None, sidcache=None, dncache=None):
         self.path = path
         self.domain = domain
         self.collection = collection
@@ -217,6 +217,8 @@ class CollectionResume(object):
         self.phases = list(phases)
         self.schema_map = dict(schema_map or {})
         self.slices = dict(slices or {})
+        self.sidcache = dict(sidcache or {})
+        self.dncache = dict(dncache or {})
 
     @staticmethod
     def _discover_prefix():
@@ -272,7 +274,7 @@ class CollectionResume(object):
             timestamp = data.get('timestamp')
             if not timestamp:
                 raise CollectionException('Resume checkpoint has no output timestamp')
-            state = cls(path, saved_domain, saved_methods, timestamp, stored_prefix, data.get('phases') or [], data.get('schema_map') or {}, data.get('slices') or {})
+            state = cls(path, saved_domain, saved_methods, timestamp, stored_prefix, data.get('phases') or [], data.get('schema_map') or {}, data.get('slices') or {}, data.get('sidcache') or {}, data.get('dncache') or {})
             if stored_prefix:
                 logging.info('Resuming collection from %s (output prefix %s)', path, stored_prefix)
             else:
@@ -282,6 +284,24 @@ class CollectionResume(object):
         state = cls(path, domain_name, methods, timestamp, stored_prefix, [], {})
         state.save()
         return state
+
+    def has_cache(self):
+        return bool(self.sidcache) or bool(self.dncache)
+
+    def save_cache(self, ad):
+        self.sidcache = ad.newsidcache.export()
+        self.dncache = dict(ad.dncache)
+        self.save()
+        logging.info('Saved %d cached SIDs and %d cached DNs to checkpoint',
+                     len(self.sidcache), len(self.dncache))
+
+    def restore_cache(self, ad):
+        if self.sidcache:
+            ad.newsidcache.load(dict(self.sidcache))
+        if self.dncache:
+            ad.dncache.update(self.dncache)
+        logging.info('Restored %d cached SIDs and %d cached DNs from checkpoint',
+                     len(self.sidcache), len(self.dncache))
 
     def has_schema(self):
         return 'schema' in self.phases and bool(self.schema_map)
@@ -315,6 +335,8 @@ class CollectionResume(object):
             'phases': self.phases,
             'schema_map': self.schema_map,
             'slices': self.slices,
+            'sidcache': self.sidcache,
+            'dncache': self.dncache,
         }
         partial = self.path + '.partial'
         with open(partial, 'w', encoding='utf-8') as handle:

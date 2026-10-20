@@ -477,27 +477,31 @@ class AceResolver(object):
                 try:
                     linkitem = self.addomain.newsidcache.get(ace['sid'])
                 except KeyError:
-                    # Look it up instead
-                    # Is this SID part of the current domain? If not, use GC
-                    use_gc = not ace['sid'].startswith(self.addomain.domain_object.sid)
-                    ldapentry = self.resolver.resolve_sid(ace['sid'], use_gc)
-                    # Couldn't resolve...
-                    if not ldapentry:
-                        logging.debug('Could not resolve SID: %s', ace['sid'])
-                        # Fake it
-                        entry = {
-                            'type': 'Base',
-                            'objectid': ace['sid']
+                    try:
+                        # Look it up instead
+                        # Is this SID part of the current domain? If not, use GC
+                        use_gc = not ace['sid'].startswith(self.addomain.domain_object.sid)
+                        ldapentry = self.resolver.resolve_sid(ace['sid'], use_gc)
+                        # Couldn't resolve...
+                        if not ldapentry:
+                            logging.debug('Could not resolve SID: %s', ace['sid'])
+                            # Fake it
+                            entry = {
+                                'type': 'Base',
+                                'objectid': ace['sid']
+                            }
+                        else:
+                            entry = ADUtils.resolve_ad_entry(ldapentry)
+                        linkitem = {
+                            "ObjectIdentifier": entry['objectid'],
+                            "ObjectType": entry['type'].capitalize()
                         }
-                    else:
-                        entry = ADUtils.resolve_ad_entry(ldapentry)
-                    linkitem = {
-                        "ObjectIdentifier": entry['objectid'],
-                        "ObjectType": entry['type'].capitalize()
-                    }
-                    # Entries are cached regardless of validity - unresolvable sids
-                    # are not likely to be resolved the second time and this saves traffic
-                    self.addomain.newsidcache.put(ace['sid'], linkitem)
+                        # Entries are cached regardless of validity - unresolvable sids
+                        # are not likely to be resolved the second time and this saves traffic
+                        self.addomain.newsidcache.put(ace['sid'], linkitem)
+                    except Exception:
+                        logging.warning('Failed to resolve SID: %s', ace['sid'])
+                        continue
                 out['PrincipalSID'] = ace['sid']
                 out['PrincipalType'] = linkitem['ObjectType']
             aces_out.append(out)
@@ -801,29 +805,6 @@ _HOST_PACER = None
 _LDAP_SEARCHES = 0
 _SEARCH_WRAPPED = False
 _count_mode = threading.local()
-_current_phase = threading.local()
-_phase_total = [0]
-_phase_index = [0]
-
-
-def set_phase(name):
-    _current_phase.name = name
-
-
-def get_phase():
-    return getattr(_current_phase, 'name', '')
-
-
-def set_phase_sequence(total):
-    _phase_total[0] = total
-    _phase_index[0] = 0
-
-
-def start_phase(name):
-    set_phase(name)
-    if _phase_total[0]:
-        _phase_index[0] += 1
-        logging.info('Phase %d/%d', _phase_index[0], _phase_total[0])
 
 
 def get_ldap_pacer():

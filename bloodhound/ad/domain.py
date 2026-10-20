@@ -33,10 +33,11 @@ from dns import resolver
 from ldap3 import ALL_ATTRIBUTES, BASE, SUBTREE, LEVEL
 from ldap3.core.exceptions import LDAPKeyError, LDAPAttributeError, LDAPCursorError, LDAPNoSuchObjectResult, LDAPSocketReceiveError, LDAPSocketSendError, LDAPCommunicationError
 from ldap3.protocol.microsoft import security_descriptor_control
-from bloodhound.ad.utils import ADUtils, DNSCache, SidCache, SamCache, CollectionException, get_ldap_pacer, get_time_window, estimate_phase_time, format_duration, ldap_search_count, set_count_mode, start_phase
+from bloodhound.ad.utils import ADUtils, DNSCache, SidCache, SamCache, CollectionException, get_ldap_pacer, get_time_window, estimate_phase_time, format_duration, ldap_search_count, set_count_mode
 from bloodhound.ad.computer import ADComputer
 from bloodhound.enumeration.objectresolver import ObjectResolver
 from bloodhound.enumeration.resume import GUID_SLICES, guid_filter
+from bloodhound.phaselogger import set_phase
 
 # Consecutive failures of the same LDAP page before the run stops.
 _LDAP_SEARCH_ATTEMPTS = 5
@@ -176,10 +177,14 @@ class ADDC(ADComputer):
             # ldapx mode: connect to the local ldapx GC listener, skip DNS
             logging.info('Connecting to GC LDAP server via ldapx listener: %s' % self.hostname)
             logging.debug('Using ldapx GC listener at %s:%d' % self.ad.gc_listener)
-            self.gcldap = self.ad.auth.getLDAPConnection(hostname=self.hostname,
-                                                         ip=self.ad.gc_listener[0],
-                                                         gc=True,
-                                                         baseDN=self.ad.baseDN, protocol='ldap')
+            try:
+                self.gcldap = self.ad.auth.getLDAPConnection(hostname=self.hostname,
+                                                             ip=self.ad.gc_listener[0],
+                                                             gc=True,
+                                                             baseDN=self.ad.baseDN, protocol='ldap')
+            except Exception as e:
+                logging.warning('Failed to connect to GC via ldapx: %s', e)
+                return False
             return self.gcldap is not None
 
         if self.hostname in self.ad.gcs():
@@ -222,8 +227,12 @@ class ADDC(ADComputer):
             logging.error('Could not resolve the IP address of any Global Catalog server')
             return False
 
-        self.gcldap = self.ad.auth.getLDAPConnection(hostname=self.hostname, ip=ip, gc=True,
-                                                     baseDN=self.ad.baseDN, protocol=protocol)
+        try:
+            self.gcldap = self.ad.auth.getLDAPConnection(hostname=self.hostname, ip=ip, gc=True,
+                                                         baseDN=self.ad.baseDN, protocol=protocol)
+        except Exception as e:
+            logging.warning('Failed to connect to GC: %s', e)
+            return False
         return self.gcldap is not None
 
     def search(self, search_filter='(objectClass=*)',attributes=None, search_base=None, generator=True, use_gc=False, use_resolver=False, query_sd=False, search_scope=SUBTREE, progress_label='LDAP', auto_escape=True):
@@ -410,7 +419,7 @@ class ADDC(ADComputer):
         """
         Function to get objecttype GUID
         """
-        start_phase('SCHEMA')
+        set_phase('SCHEMA')
         logging.info('Collecting schema')
         started = ldap_search_count()
         resume = getattr(self, 'resume', None)
@@ -855,7 +864,7 @@ class ADDC(ADComputer):
     def prefetch_info(self, props=False, acls=False, cache_computers=False, skip_schema=False):
         if not skip_schema:
             self.get_objecttype()
-        start_phase('SETUP')
+        set_phase('PREFETCH')
         started = ldap_search_count()
         self.get_domains(acl=acls)
         self.get_forest_domains()

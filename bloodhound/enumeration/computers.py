@@ -29,9 +29,10 @@ import codecs
 from impacket.dcerpc.v5.rpcrt import DCERPCException
 from bloodhound.enumeration.outputworker import OutputWorker
 from bloodhound.enumeration.resume import finish_phase, output_filename, prepare_phase
+from bloodhound.phaselogger import set_phase
 from bloodhound.enumeration.memberships import MembershipEnumerator
 from bloodhound.ad.computer import ADComputer
-from bloodhound.ad.utils import ADUtils, ldap_search_count, call_host, start_phase
+from bloodhound.ad.utils import ADUtils, ldap_search_count, call_host
 
 class ComputerEnumerator(MembershipEnumerator):
     """
@@ -68,7 +69,7 @@ class ComputerEnumerator(MembershipEnumerator):
             Enumerates the computers in the domain. Is threaded, you can specify the number of workers.
             Will spawn threads to resolve computers and enumerate the information.
         """
-        start_phase('HOSTS')
+        set_phase('HOSTS')
         if num_workers < 1:
             logging.error('Number of workers must be at least 1, got %d', num_workers)
             return

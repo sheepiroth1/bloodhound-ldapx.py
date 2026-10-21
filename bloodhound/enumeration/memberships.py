@@ -30,11 +30,13 @@ import calendar
 from bloodhound.ad.utils import ADUtils, AceResolver, CollectionException, ldap_search_count, get_time_window, get_ldap_pacer, estimate_phase_time, format_duration
 from bloodhound.ad.computer import ADComputer
 from bloodhound.ad.structures import LDAP_SID
+from ldap3 import BASE
 from bloodhound.enumeration.acls import AclEnumerator, parse_binary_acl
 from bloodhound.enumeration.outputworker import OutputWorker
 from bloodhound.enumeration.resume import (
-    GUID_SLICES, concat_slice_files, finish_phase, output_filename, prepare_phase,
-    remove_output, slice_output_path,
+    GUID_SLICES, LdapRetryTracker, concat_slice_files, finish_phase,
+    is_resumable_error, output_filename, prepare_phase, remove_output,
+    slice_output_path,
 )
 from bloodhound.phaselogger import set_phase
 
@@ -59,6 +61,7 @@ class MembershipEnumerator(object):
         self.resume = None
         self._writer_thread = None
         self._search_mark = None
+        self._retry_tracker = None
 
     def _start_writer(self, worker, args):
         status = []
@@ -102,6 +105,40 @@ class MembershipEnumerator(object):
         else:
             self.result_q.put(obj)
 
+    def _retry_pending(self, phase, fill):
+        """
+        Re-fetch objects that failed with transient LDAP errors in a prior pass.
+        Each entry is fetched individually by DN. Successfully processed entries
+        are removed from the tracker; persistent failures stay for the next run.
+        """
+        tracker = self._retry_tracker
+        if tracker is None or tracker.is_empty():
+            return
+        pending = tracker.get_pending_dns()
+        logging.info('Retrying %d failed %s entries from %s', len(pending), phase, tracker.path)
+        for dn in pending:
+            try:
+                entries = list(self.addc.search(
+                    '(objectClass=*)', search_base=dn, search_scope=BASE,
+                    query_sd=True, generator=False))
+                if not entries:
+                    logging.warning('Retry: could not find %s, removing from retry list', dn)
+                    tracker.remove(dn)
+                    continue
+                fill(entries)
+                tracker.remove(dn)
+                logging.debug('Retry: successfully processed %s', dn)
+            except Exception as exc:
+                if is_resumable_error(exc):
+                    logging.warning('Retry: still failing for %s: %s', dn, exc)
+                else:
+                    raise
+        if tracker.is_empty():
+            logging.info('All %s retry entries resolved', phase)
+        else:
+            logging.warning('%d %s entries still pending in %s',
+                            len(tracker.get_pending_dns()), phase, tracker.path)
+
     def _collect(self, phase, filename, meta_type, fetch, fill, extras=None, count_filter=None):
         """
         Run one output phase. With --partition-ldap, each objectGUID slice is
@@ -109,6 +146,7 @@ class MembershipEnumerator(object):
         --partition-auto, estimate single-query time against the run window
         and skip slicing when it fits.
         """
+        self._retry_tracker = LdapRetryTracker(phase, getattr(self.resume, 'prefix', ''))
         skip_slicing = not getattr(self.addc, 'partition_ldap', False)
         if not skip_slicing and getattr(self.addc, 'partition_auto', False) and count_filter is not None:
             tw = get_time_window()
@@ -135,6 +173,7 @@ class MembershipEnumerator(object):
             self.result_q = queue.Queue()
             status = self._start_writer(OutputWorker.membership_write_worker, (self.result_q, meta_type, filename))
             fill(fetch(None))
+            self._retry_pending(phase, fill)
             if extras:
                 extras()
             self._close_acl_pool()
@@ -162,6 +201,15 @@ class MembershipEnumerator(object):
             if self.resume is not None:
                 self.resume.mark_slice(phase, prefix)
             slice_files.append(path)
+        if not self._retry_tracker.is_empty():
+            retry_path = slice_output_path(filename, 'retry')
+            remove_output(retry_path)
+            self.result_q = queue.Queue()
+            retry_status = self._start_writer(OutputWorker.membership_write_worker, (self.result_q, meta_type, retry_path))
+            self._retry_pending(phase, fill)
+            self._end_writer()
+            if retry_status and retry_status[0]:
+                slice_files.append(retry_path)
         extra_rows = []
         if extras:
             self._captured = []
@@ -253,7 +301,15 @@ class MembershipEnumerator(object):
             self.aclenumerator.init_pool()
             self._acl_pool_open = True
         for entry in entries:
-            self._process_user(entry, with_properties, acl)
+            try:
+                self._process_user(entry, with_properties, acl)
+            except Exception as exc:
+                if is_resumable_error(exc) and self._retry_tracker is not None:
+                    self._retry_tracker.add(entry, exc)
+                    logging.warning('Transient LDAP error processing user %s, saved for retry: %s',
+                                    entry.get('dn', '?'), exc)
+                else:
+                    raise
 
     def _process_user(self, entry, with_properties, acl):
         resolved_entry = ADUtils.resolve_ad_entry(entry)
@@ -353,24 +409,15 @@ class MembershipEnumerator(object):
         self.result_q = queue.Queue()
         writer_status = self._start_writer(OutputWorker.membership_write_worker, (self.result_q, 'users', filename))
 
-        if acl and not self.disable_pooling:
-            self.aclenumerator.init_pool()
-            self._acl_pool_open = True
-
-        # This loops over a generator, results are fetched from LDAP on the go
-        for entry in entries:
-            self._process_user(entry, with_properties, acl)
+        self._retry_tracker = LdapRetryTracker('users', getattr(self.resume, 'prefix', '') if self.resume else '')
+        self._fill_users(entries, with_properties, acl)
+        self._close_acl_pool()
+        self._retry_pending('users', lambda found: self._fill_users(found, with_properties, acl))
 
         self.write_default_users()
 
-        # If we are parsing ACLs, close the parsing pool first
-        # then close the result queue and join it
-        if acl and not self.disable_pooling:
-            self.aclenumerator.pool.close()
-            self.aclenumerator.pool.join()
-            self.result_q.put(None)
-        else:
-            self.result_q.put(None)
+        self._close_acl_pool()
+        self.result_q.put(None)
         self._finish_writer('users', writer_status)
 
         logging.debug('Finished writing users')
@@ -380,7 +427,15 @@ class MembershipEnumerator(object):
             self.aclenumerator.init_pool()
             self._acl_pool_open = True
         for entry in entries:
-            self._process_group(entry, with_properties, acl, is_highvalue)
+            try:
+                self._process_group(entry, with_properties, acl, is_highvalue)
+            except Exception as exc:
+                if is_resumable_error(exc) and self._retry_tracker is not None:
+                    self._retry_tracker.add(entry, exc)
+                    logging.warning('Transient LDAP error processing group %s, saved for retry: %s',
+                                    entry.get('dn', '?'), exc)
+                else:
+                    raise
 
     def _process_group(self, entry, with_properties, acl, is_highvalue):
         resolved_entry = ADUtils.resolve_ad_entry(entry)
@@ -465,23 +520,15 @@ class MembershipEnumerator(object):
         self.result_q = queue.Queue()
         writer_status = self._start_writer(OutputWorker.membership_write_worker, (self.result_q, 'groups', filename))
 
-        if acl and not self.disable_pooling:
-            self.aclenumerator.init_pool()
-            self._acl_pool_open = True
-
-        for entry in entries:
-            self._process_group(entry, with_properties, acl, is_highvalue)
+        self._retry_tracker = LdapRetryTracker('groups', getattr(self.resume, 'prefix', '') if self.resume else '')
+        self._fill_groups(entries, with_properties, acl, is_highvalue)
+        self._close_acl_pool()
+        self._retry_pending('groups', lambda found: self._fill_groups(found, with_properties, acl, is_highvalue))
 
         self.write_default_groups()
 
-        # If we are parsing ACLs, close the parsing pool first
-        # then close the result queue and join it
-        if acl and not self.disable_pooling:
-            self.aclenumerator.pool.close()
-            self.aclenumerator.pool.join()
-            self.result_q.put(None)
-        else:
-            self.result_q.put(None)
+        self._close_acl_pool()
+        self.result_q.put(None)
         self._finish_writer('groups', writer_status)
 
         logging.debug('Finished writing groups')
@@ -491,7 +538,15 @@ class MembershipEnumerator(object):
             self.aclenumerator.init_pool()
             self._acl_pool_open = True
         for entry in entries:
-            self._process_computer(entry, acl)
+            try:
+                self._process_computer(entry, acl)
+            except Exception as exc:
+                if is_resumable_error(exc) and self._retry_tracker is not None:
+                    self._retry_tracker.add(entry, exc)
+                    logging.warning('Transient LDAP error processing computer %s, saved for retry: %s',
+                                    entry.get('dn', '?'), exc)
+                else:
+                    raise
 
     def _process_computer(self, entry, acl):
         if 'attributes' not in entry:
@@ -540,21 +595,13 @@ class MembershipEnumerator(object):
         self.result_q = queue.Queue()
         writer_status = self._start_writer(OutputWorker.membership_write_worker, (self.result_q, 'computers', filename))
 
-        if acl and not self.disable_pooling:
-            self.aclenumerator.init_pool()
+        self._retry_tracker = LdapRetryTracker('computers', getattr(self.resume, 'prefix', '') if self.resume else '')
+        self._fill_computers(entries, acl)
+        self._close_acl_pool()
+        self._retry_pending('computers', lambda found: self._fill_computers(found, acl))
 
-        # This loops over the cached entries
-        for entry in entries:
-            self._process_computer(entry, acl)
-
-        # If we are parsing ACLs, close the parsing pool first
-        # then close the result queue and join it
-        if acl and not self.disable_pooling:
-            self.aclenumerator.pool.close()
-            self.aclenumerator.pool.join()
-            self.result_q.put(None)
-        else:
-            self.result_q.put(None)
+        self._close_acl_pool()
+        self.result_q.put(None)
         self._finish_writer('computers', writer_status)
 
         logging.debug('Finished writing computers')
@@ -564,7 +611,15 @@ class MembershipEnumerator(object):
             self.aclenumerator.init_pool()
             self._acl_pool_open = True
         for entry in entries:
-            self._process_gpo(entry, with_properties, acl)
+            try:
+                self._process_gpo(entry, with_properties, acl)
+            except Exception as exc:
+                if is_resumable_error(exc) and self._retry_tracker is not None:
+                    self._retry_tracker.add(entry, exc)
+                    logging.warning('Transient LDAP error processing GPO %s, saved for retry: %s',
+                                    entry.get('dn', '?'), exc)
+                else:
+                    raise
 
     def _process_gpo(self, entry, with_properties, acl):
         try:
@@ -630,22 +685,13 @@ class MembershipEnumerator(object):
         self.result_q = queue.Queue()
         writer_status = self._start_writer(OutputWorker.membership_write_worker, (self.result_q, 'gpos', filename))
 
-        if acl and not self.disable_pooling:
-            self.aclenumerator.init_pool()
+        self._retry_tracker = LdapRetryTracker('gpos', getattr(self.resume, 'prefix', '') if self.resume else '')
+        self._fill_gpos(entries, with_properties, acl)
+        self._close_acl_pool()
+        self._retry_pending('gpos', lambda found: self._fill_gpos(found, with_properties, acl))
 
-        for entry in entries:
-            self._process_gpo(entry, with_properties, acl)
-
-            # self.write_default_groups()
-
-        # If we are parsing ACLs, close the parsing pool first
-        # then close the result queue and join it
-        if acl and not self.disable_pooling:
-            self.aclenumerator.pool.close()
-            self.aclenumerator.pool.join()
-            self.result_q.put(None)
-        else:
-            self.result_q.put(None)
+        self._close_acl_pool()
+        self.result_q.put(None)
         self._finish_writer('gpos', writer_status)
 
         logging.debug('Finished writing GPO')
@@ -806,14 +852,30 @@ class MembershipEnumerator(object):
             self.aclenumerator.init_pool()
             self._acl_pool_open = True
         for entry in entries:
-            self._process_ou(entry, with_properties, acl)
+            try:
+                self._process_ou(entry, with_properties, acl)
+            except Exception as exc:
+                if is_resumable_error(exc) and self._retry_tracker is not None:
+                    self._retry_tracker.add(entry, exc)
+                    logging.warning('Transient LDAP error processing OU %s, saved for retry: %s',
+                                    entry.get('dn', '?'), exc)
+                else:
+                    raise
 
     def _fill_containers(self, entries, with_properties, acl):
         if acl and not self.disable_pooling:
             self.aclenumerator.init_pool()
             self._acl_pool_open = True
         for entry in entries:
-            self._process_container(entry, with_properties, acl)
+            try:
+                self._process_container(entry, with_properties, acl)
+            except Exception as exc:
+                if is_resumable_error(exc) and self._retry_tracker is not None:
+                    self._retry_tracker.add(entry, exc)
+                    logging.warning('Transient LDAP error processing container %s, saved for retry: %s',
+                                    entry.get('dn', '?'), exc)
+                else:
+                    raise
 
     def enumerate_ous(self, timestamp ="", fileNamePrefix=""):
         set_phase('OUS')
@@ -838,22 +900,13 @@ class MembershipEnumerator(object):
         self.result_q = queue.Queue()
         writer_status = self._start_writer(OutputWorker.membership_write_worker, (self.result_q, 'ous', filename))
 
-        if acl and not self.disable_pooling:
-            self.aclenumerator.init_pool()
+        self._retry_tracker = LdapRetryTracker('ous', getattr(self.resume, 'prefix', '') if self.resume else '')
+        self._fill_ous(entries, with_properties, acl)
+        self._close_acl_pool()
+        self._retry_pending('ous', lambda found: self._fill_ous(found, with_properties, acl))
 
-        for entry in entries:
-            self._process_ou(entry, with_properties, acl)
-
-            # self.write_default_groups()
-
-        # If we are parsing ACLs, close the parsing pool first
-        # then close the result queue and join it
-        if acl and not self.disable_pooling:
-            self.aclenumerator.pool.close()
-            self.aclenumerator.pool.join()
-            self.result_q.put(None)
-        else:
-            self.result_q.put(None)
+        self._close_acl_pool()
+        self.result_q.put(None)
         self._finish_writer('ous', writer_status)
 
         logging.debug('Finished writing OU')
@@ -881,20 +934,13 @@ class MembershipEnumerator(object):
         self.result_q = queue.Queue()
         writer_status = self._start_writer(OutputWorker.membership_write_worker, (self.result_q, 'containers', filename))
 
-        if acl and not self.disable_pooling:
-            self.aclenumerator.init_pool()
+        self._retry_tracker = LdapRetryTracker('containers', getattr(self.resume, 'prefix', '') if self.resume else '')
+        self._fill_containers(entries, with_properties, acl)
+        self._close_acl_pool()
+        self._retry_pending('containers', lambda found: self._fill_containers(found, with_properties, acl))
 
-        for entry in entries:
-            self._process_container(entry, with_properties, acl)
-
-        # If we are parsing ACLs, close the parsing pool first
-        # then close the result queue and join it
-        if acl and not self.disable_pooling:
-            self.aclenumerator.pool.close()
-            self.aclenumerator.pool.join()
-            self.result_q.put(None)
-        else:
-            self.result_q.put(None)
+        self._close_acl_pool()
+        self.result_q.put(None)
         self._finish_writer('containers', writer_status)
 
         logging.debug('Finished writing containers')

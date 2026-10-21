@@ -27,7 +27,100 @@ import logging
 import os
 import time
 
+from ldap3.core.exceptions import (
+    LDAPCommunicationError, LDAPSocketReceiveError, LDAPSocketSendError,
+)
+
 from bloodhound.ad.utils import CollectionException
+
+RESUMABLE_EXCEPTIONS = (
+    LDAPCommunicationError,
+    LDAPSocketReceiveError,
+    LDAPSocketSendError,
+    CollectionException,
+    ConnectionResetError,
+    ConnectionAbortedError,
+    BrokenPipeError,
+    TimeoutError,
+)
+
+
+def is_resumable_error(exc):
+    return isinstance(exc, RESUMABLE_EXCEPTIONS)
+
+
+class LdapRetryTracker(object):
+    """
+    Tracks LDAP objects that failed with transient errors so they can be
+    retried on a subsequent run.  File format: JSON list of
+    {"dn": "...", "phase": "..."} dicts.
+    """
+
+    def __init__(self, phase, prefix=''):
+        if prefix:
+            self.path = '%s_bloodhound_%s_ldap_to_resume.json' % (prefix, phase)
+        else:
+            self.path = 'bloodhound_%s_ldap_to_resume.json' % phase
+        self.phase = phase
+        self._pending = {}
+        self._load()
+
+    def _load(self):
+        if not os.path.isfile(self.path):
+            return
+        try:
+            with open(self.path, 'r', encoding='utf-8') as f:
+                entries = json.load(f)
+            for entry in entries:
+                dn = entry.get('dn')
+                if dn:
+                    self._pending[dn] = entry
+            logging.info('Loaded %d entries to retry for %s from %s',
+                         len(self._pending), self.phase, self.path)
+        except (OSError, ValueError) as exc:
+            logging.warning('Could not read retry file %s: %s', self.path, exc)
+
+    def add(self, entry, error):
+        dn = entry.get('dn', '')
+        if not dn:
+            return
+        self._pending[dn] = {
+            'dn': dn,
+            'phase': self.phase,
+            'error': str(error),
+        }
+        self._save()
+
+    def remove(self, dn):
+        if dn in self._pending:
+            del self._pending[dn]
+            self._save()
+
+    def get_pending_dns(self):
+        return list(self._pending.keys())
+
+    def _save(self):
+        if not self._pending:
+            self._cleanup()
+            return
+        partial = self.path + '.partial'
+        with open(partial, 'w', encoding='utf-8') as f:
+            json.dump(list(self._pending.values()), f)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(partial, self.path)
+
+    def _cleanup(self):
+        try:
+            os.remove(self.path)
+        except OSError:
+            pass
+
+    def is_empty(self):
+        return len(self._pending) == 0
 
 
 def checkpoint_path(prefix):

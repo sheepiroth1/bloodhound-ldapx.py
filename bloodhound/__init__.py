@@ -1105,6 +1105,11 @@ def main():
 
         phase_seq = build_phase_sequence(collect, ldapx is not None, phase_filter=phase_filter)
         logging.info('Phase sequence: %s', ' > '.join(phase_seq))
+        if phase_filter is not None:
+            seq_lower = {p.lower() for p in phase_seq}
+            skipped = phase_filter - seq_lower
+            for phase in sorted(skipped):
+                logging.warning('Requested phase %s will not run (not applicable for collection method %s)', phase, args.collectionmethod)
 
         if ldapx is not None:
             # ldapx mode: no DNS discovery. The DC/GC are the real DC FQDN (used

@@ -1077,21 +1077,27 @@ class MembershipEnumerator(object):
         }
         self._emit(iugroup)
 
-    def do_container_collection(self, timestamp="", fileNamePrefix=""):
-        self.enumerate_gpos(timestamp, fileNamePrefix)
-        self.enumerate_ous(timestamp, fileNamePrefix)
-        self.enumerate_containers(timestamp, fileNamePrefix)
+    def do_container_collection(self, timestamp="", fileNamePrefix="", phase_filter=None):
+        if phase_filter is None or 'gpos' in phase_filter:
+            self.enumerate_gpos(timestamp, fileNamePrefix)
+        if phase_filter is None or 'ous' in phase_filter:
+            self.enumerate_ous(timestamp, fileNamePrefix)
+        if phase_filter is None or 'containers' in phase_filter:
+            self.enumerate_containers(timestamp, fileNamePrefix)
 
-    def enumerate_memberships(self, timestamp="", fileNamePrefix=""):
+    def enumerate_memberships(self, timestamp="", fileNamePrefix="", phase_filter=None):
         """
         Run appropriate enumeration tasks
         """
-        self.enumerate_users(timestamp, fileNamePrefix)
-        self.enumerate_groups(timestamp, fileNamePrefix)
+        if phase_filter is None or 'users' in phase_filter:
+            self.enumerate_users(timestamp, fileNamePrefix)
+        if phase_filter is None or 'groups' in phase_filter:
+            self.enumerate_groups(timestamp, fileNamePrefix)
         if 'container' in self.collect:
-            self.do_container_collection(timestamp, fileNamePrefix)
+            self.do_container_collection(timestamp, fileNamePrefix, phase_filter=phase_filter)
         if not ('localadmin' in self.collect
                 or 'session' in self.collect
                 or 'loggedon' in self.collect
                 or 'experimental' in self.collect):
-            self.enumerate_computers_dconly(timestamp, fileNamePrefix)
+            if phase_filter is None or 'computers' in phase_filter:
+                self.enumerate_computers_dconly(timestamp, fileNamePrefix)

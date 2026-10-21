@@ -479,7 +479,7 @@ class BloodHound(object):
         self.ad.create_objectresolver(self.pdc)
 
 
-    def run(self, collect, num_workers=10, disable_pooling=False, timestamp="", computerfile="", cachefile=None, exclude_dcs=False, fileNamePrefix="", resume=None, partition_ldap=False, search_base=None, partition_auto=False, partition_buffer=1800):
+    def run(self, collect, num_workers=10, disable_pooling=False, timestamp="", computerfile="", cachefile=None, exclude_dcs=False, fileNamePrefix="", resume=None, partition_ldap=False, search_base=None, partition_auto=False, partition_buffer=1800, phase_filter=None):
         start_time = time.time()
         install_ldap_search_counter()
         if search_base:
@@ -499,6 +499,9 @@ class BloodHound(object):
         if resume is not None and resume.has_cache():
             resume.restore_cache(self.ad)
 
+        def phase_enabled(phase):
+            return phase_filter is None or phase in phase_filter
+
         # Check early if we should enumerate computers as well
         do_computer_enum = any(method in collect for method in ['localadmin', 'session', 'loggedon', 'experimental', 'rdp', 'dcom', 'psremote'])
         skip_schema = resume is not None and resume.has_schema()
@@ -507,34 +510,32 @@ class BloodHound(object):
             logging.info('Skipping schema, checkpoint has %d types', len(resume.schema_map))
             self.pdc.restore_objecttype(resume.schema_map)
 
-        if 'group' in collect or 'objectprops' in collect or 'acl' in collect:
-            # Fetch domains for later, computers if needed
-            self.pdc.prefetch_info('objectprops' in collect, 'acl' in collect, cache_computers=cache_computers, skip_schema=skip_schema)
-            # Initialize enumerator
-            membership_enum = MembershipEnumerator(self.ad, self.pdc, collect, disable_pooling)
-            membership_enum.resume = resume
-            membership_enum.enumerate_memberships(timestamp=timestamp, fileNamePrefix=fileNamePrefix)
-        elif 'container' in collect:
-            # Fetch domains for later, computers if needed
-            self.pdc.prefetch_info('objectprops' in collect, 'acl' in collect, cache_computers=cache_computers, skip_schema=skip_schema)
-            # Initialize enumerator
-            membership_enum = MembershipEnumerator(self.ad, self.pdc, collect, disable_pooling)
-            membership_enum.resume = resume
-            membership_enum.do_container_collection(timestamp=timestamp, fileNamePrefix=fileNamePrefix)
-        elif do_computer_enum:
-            # We need to know which computers to query regardless
-            # We also need the domains to have a mapping from NETBIOS -> FQDN for local admins
+        has_membership = 'group' in collect or 'objectprops' in collect or 'acl' in collect
+        has_container = 'container' in collect
+
+        # SCHEMA + PREFETCH always run when any data phase needs them
+        if has_membership or has_container or do_computer_enum:
             self.pdc.prefetch_info('objectprops' in collect, 'acl' in collect, cache_computers=cache_computers, skip_schema=skip_schema)
         elif 'trusts' in collect:
-            # Prefetch domains
             started = ldap_search_count()
             self.pdc.get_domains('acl' in collect)
             logging.info('Domain lookup: %d LDAP searches', ldap_search_count() - started)
-        if 'trusts' in collect or 'acl' in collect or 'objectprops' in collect:
+
+        # Membership and container phases
+        if has_membership:
+            membership_enum = MembershipEnumerator(self.ad, self.pdc, collect, disable_pooling)
+            membership_enum.resume = resume
+            membership_enum.enumerate_memberships(timestamp=timestamp, fileNamePrefix=fileNamePrefix, phase_filter=phase_filter)
+        elif has_container:
+            membership_enum = MembershipEnumerator(self.ad, self.pdc, collect, disable_pooling)
+            membership_enum.resume = resume
+            membership_enum.do_container_collection(timestamp=timestamp, fileNamePrefix=fileNamePrefix, phase_filter=phase_filter)
+
+        if ('trusts' in collect or 'acl' in collect or 'objectprops' in collect) and phase_enabled('domains'):
             trusts_enum = DomainEnumerator(self.ad, self.pdc)
             trusts_enum.resume = resume
             trusts_enum.dump_domain(collect,timestamp=timestamp,fileNamePrefix=fileNamePrefix)
-        if do_computer_enum:
+        if do_computer_enum and phase_enabled('hosts'):
             # If we don't have a GC server, don't use it for deconflictation
             have_gc = len(self.ad.gcs()) > 0
             computer_enum = ComputerEnumerator(self.ad, self.pdc, collect, do_gc_lookup=have_gc, computerfile=computerfile, exclude_dcs=exclude_dcs)
@@ -591,6 +592,25 @@ def resolve_collection_methods(methods):
         else:
             logging.error('Invalid collection method specified: %s', method)
             return False
+
+VALID_PHASES = {'users', 'groups', 'gpos', 'ous', 'containers', 'computers', 'domains', 'hosts'}
+
+def parse_phase_filter(phase_arg):
+    if phase_arg is None:
+        return None
+    phases = set()
+    for name in phase_arg.split(','):
+        name = name.strip().lower()
+        if not name:
+            continue
+        if name not in VALID_PHASES:
+            logging.error('Invalid phase specified: %s (valid: %s)', name, ', '.join(sorted(VALID_PHASES)))
+            return False
+        phases.add(name)
+    if not phases:
+        logging.error('No valid phases specified')
+        return False
+    return phases
 
 def main():
 #    logging.basicConfig(stream=sys.stderr, level=logging.INFO)
@@ -717,6 +737,12 @@ def main():
     coopts.add_argument('--cachefile',
                         action='store',
                         help='Cache file (experimental)')
+    coopts.add_argument('--phase',
+                        action='store',
+                        help='Comma-separated list of phases to run (e.g. users,groups,gpos). '
+                             'Valid phases: users, groups, gpos, ous, containers, computers, '
+                             'domains, hosts. Schema and prefetch always run implicitly. '
+                             'Phases not listed are skipped. Omit to run all phases.')
     coopts.add_argument('--ldap-channel-binding',
                         action='store_true',
                         help='Use LDAP Channel Binding (will force ldaps protocol to be used). Don\'t use while '
@@ -1071,7 +1097,13 @@ def main():
             return
         logging.debug('Resolved collection methods: %s', ', '.join(list(collect)))
 
-        phase_seq = build_phase_sequence(collect, ldapx is not None)
+        phase_filter = parse_phase_filter(args.phase)
+        if phase_filter is False:
+            return
+        if phase_filter is not None:
+            logging.info('Phase filter: %s', ', '.join(sorted(phase_filter)))
+
+        phase_seq = build_phase_sequence(collect, ldapx is not None, phase_filter=phase_filter)
         logging.info('Phase sequence: %s', ' > '.join(phase_seq))
 
         if ldapx is not None:
@@ -1159,7 +1191,8 @@ def main():
                        partition_ldap=args.partition_ldap,
                        search_base=args.search_base,
                        partition_auto=args.partition_auto,
-                       partition_buffer=partition_buffer_seconds)
+                       partition_buffer=partition_buffer_seconds,
+                       phase_filter=phase_filter)
         set_phase('OUTPUT')
         if args.zip:
             logging.info("Compressing output into " + timestamp + "bloodhound.zip")
